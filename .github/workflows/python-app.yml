@@ -1,38 +1,33 @@
 name: Google Trends Workflow
 
 on:
-  workflow_dispatch: {}   # Cho phép Run thủ công
-  # Nếu muốn tự động hàng tháng (9h sáng ngày cuối tháng), bỏ comment cron:
+  workflow_dispatch:   # <== phải có để chạy thủ công
+  push:
+    branches: [ "main" ]
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
-
-    env:
-      SHEET_ID: ${{ secrets.SHEET_ID }}        # BẮT BUỘC: dán ID sheet vào Secrets
-      GEO: "US"                                 # Có thể đổi "US" -> "KR", "ID",...
-      GPROP: ""                                 # "", "images", "news", "youtube", "froogle"
-
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
-          - name: Install dependencies
-      run: |
-        python -m pip install --upgrade pip
-        # Cưỡng ép đúng version trước, tránh pip resolver kéo về urllib3 2.x
-        pip install --no-cache-dir --force-reinstall "urllib3<2" "requests<2.32"
-        # Cài phần còn lại
-        pip install --no-cache-dir -r requirements.txt
-        # In version ra log để kiểm chứng
-        python - << 'PY'
-import urllib3, requests, pytrends, pandas, numpy
-print("urllib3:", urllib3.__version__)
-print("requests:", requests.__version__)
-print("pytrends OK, pandas:", pandas.__version__, "numpy:", numpy.__version__)
-PY
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Write GCP creds to file
+        run: echo "${GOOGLE_APPLICATION_CREDENTIALS_JSON}" > creds.json
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS_JSON: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}
+
+      - name: Run main.py
+        env:
+          SHEET_ID: ${{ secrets.SHEET_ID }}
+        run: python main.py
