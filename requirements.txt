@@ -1,3 +1,5 @@
-pytrends
+pytrends==4.9.2
+gspread
+google-auth
+gspread-dataframe
 pandas
-apify
