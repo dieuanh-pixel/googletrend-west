@@ -1,23 +1,23 @@
 import os
 import json
-from datetime import date, timedelta
+import datetime as dt
 import pandas as pd
 
 from pytrends.request import TrendReq
-from google.oauth2 import service_account
+
+from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 
-# ---------- Config ----------
-# 1) Lấy Sheet ID từ biến môi trường (đã set trong GitHub Secret SHEET_ID)
-SHEET_ID = os.environ["SHEET_ID"]  # sẽ lỗi KeyError nếu chưa map env
+# ========= Cấu hình từ ENV / Secrets =========
+SHEET_ID = os.getenv("SHEET_ID", "").strip()           # BẮT BUỘC có (đặt trong Secrets GitHub)
+CREDS_JSON_PATH = "creds.json"                          # Workflow sẽ ghi file này từ secret JSON
+GPROP = os.getenv("GPROP", "").strip()                  # "", "images", "news", "youtube", "froogle"
+GEO = os.getenv("GEO", "US").strip()                    # Mặc định lấy US
 
-# 2) Đường dẫn file key service account mà workflow đã tạo
-CREDS_JSON = "creds.json"
-
-# 3) Danh sách keyword/brand (Hàn hoặc EN đều được)
+# Danh sách brand (chỉnh trong code cho nhanh); có thể thay bằng ENV nếu muốn
 BRANDS = [
-    "메디큐브",      # Medicube
+    "메디큐브",      # Medicube (KR)
     "코스알엑스",     # COSRX
     "아누아",        # ANUA
     "조선미녀",      # Beauty of Joseon
@@ -26,122 +26,125 @@ BRANDS = [
     "MIXSOON",
 ]
 
-# 4) Cấu hình quốc gia/thiết bị cho Google Trends
-GEO = "US"   # United States
-GPROP = "web"  # "web" | "images" | "news" | "youtube" | "froogle"
-# ---------------------------
+
+def assert_inputs():
+    """Kiểm tra đầu vào & validate gprop theo pytrends."""
+    if not SHEET_ID:
+        raise ValueError("Thiếu SHEET_ID (GitHub Secrets)")
+
+    allowed_gprops = {"", "images", "news", "youtube", "froogle"}
+    if GPROP not in allowed_gprops:
+        raise ValueError(
+            f"GPROP='{GPROP}' không hợp lệ. Cho phép: {allowed_gprops}"
+        )
 
 
-def prev_month_range(today: date | None = None) -> tuple[str, str, str]:
+def last_full_month_range():
+    """Trả về (start_date, end_date) cho THÁNG TRƯỚC (YYYY-MM-DD)."""
+    today = dt.date.today()
+    first_of_this_month = today.replace(day=1)
+    last_day_prev_month = first_of_this_month - dt.timedelta(days=1)
+    first_day_prev_month = last_day_prev_month.replace(day=1)
+    return first_day_prev_month, last_day_prev_month
+
+
+def trends_monthly_dataframe(brands, geo, gprop, start_d, end_d):
     """
-    Trả về (yyyy-mm, start_iso, end_iso) của THÁNG TRƯỚC.
-    Ví dụ hôm nay 2025-09-17 -> "2025-08", "2025-08-01", "2025-08-31"
+    Lấy Google Trends cho từng brand trong khoảng start_d – end_d,
+    trả về DataFrame gồm brand, start_date, end_date, avg_interest.
     """
-    if today is None:
-        today = date.today()
-    first_this = today.replace(day=1)
-    last_prev = first_this - timedelta(days=1)
-    first_prev = last_prev.replace(day=1)
-    ym = f"{first_prev:%Y-%m}"
-    return ym, f"{first_prev:%Y-%m-%d}", f"{last_prev:%Y-%m-%d}"
+    pytrends = TrendReq(hl="en-US", tz=0, retries=2, backoff_factor=0.2)
+    timeframe = f"{start_d:%Y-%m-%d} {end_d:%Y-%m-%d}"
 
+    rows = []
+    for kw in brands:
+        # Build payload theo chuẩn pytrends
+        pytrends.build_payload(
+            kw_list=[kw],
+            timeframe=timeframe,
+            geo=geo,
+            gprop=gprop  # "", "images", "news", "youtube", "froogle"
+        )
 
-def auth_sheets(creds_path: str):
-    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
-    credentials = service_account.Credentials.from_service_account_file(
-        creds_path, scopes=scopes
-    )
-    return build("sheets", "v4", credentials=credentials).spreadsheets()
+        iot = pytrends.interest_over_time()
+        if iot is None or iot.empty:
+            avg_val = None
+        else:
+            # Bỏ cột isPartial nếu có
+            if "isPartial" in iot.columns:
+                iot = iot.drop(columns=["isPartial"])
+            # Lấy trung bình trong tháng
+            avg_val = float(iot[kw].mean())
 
-
-def trends_monthly_dataframe(brands: list[str], geo: str, gprop: str,
-                             start_date: str, end_date: str) -> pd.DataFrame:
-    """
-    Lấy Interest over time trong khoảng (start_date, end_date) cho list từ khóa.
-    start_date/end_date dạng 'YYYY-MM-DD'.
-    """
-    # Google Trends dùng định dạng: YYYY-MM-DD YYYY-MM-DD
-    timeframe = f"{start_date} {end_date}"
-
-    # Khởi tạo pytrends (ngôn ngữ & timezone mặc định)
-    pytrends = TrendReq(hl="en-US", tz=0)
-
-    # Pytrends hỗ trợ tối đa ~5 keyword/lượt, nên ta sẽ chunk
-    def chunks(lst, n):
-        for i in range(0, len(lst), n):
-            yield lst[i:i + n]
-
-    frames = []
-    for group in chunks(brands, 5):
-        pytrends.build_payload(group, timeframe=timeframe, geo=geo, gprop=gprop)
-        df = pytrends.interest_over_time()
-        if df.empty:
-            continue
-        # Bỏ cột isPartial (không cần)
-        if "isPartial" in df.columns:
-            df = df.drop(columns=["isPartial"])
-        frames.append(df)
-
-    if not frames:
-        return pd.DataFrame()
-
-    # Gộp theo index (ngày) rồi giữ max theo cột trùng (nếu có)
-    full = pd.concat(frames, axis=1)
-    full = full.groupby(level=0, axis=1).max()
-    full.reset_index(inplace=True)
-    full.rename(columns={"date": "Date"}, inplace=True)
-    return full
-
-
-def write_to_sheet(svc, sheet_id: str, tab_name: str, df: pd.DataFrame):
-    """
-    Ghi DataFrame vào tab `tab_name`. Nếu tab đã tồn tại, sẽ clear trước khi ghi.
-    """
-    # 1) Tạo sheet nếu chưa có
-    meta = svc.get(spreadsheetId=sheet_id).execute()
-    sheets = [s["properties"]["title"] for s in meta.get("sheets", [])]
-    requests = []
-    if tab_name not in sheets:
-        requests.append({
-            "addSheet": {"properties": {"title": tab_name}}
+        rows.append({
+            "brand": kw,
+            "start_date": str(start_d),
+            "end_date": str(end_d),
+            "avg_interest": avg_val,
+            "geo": geo,
+            "gprop": gprop if gprop else "web"
         })
-    else:
-        # Clear dữ liệu cũ
-        svc.values().clear(
-            spreadsheetId=sheet_id,
-            range=f"{tab_name}!A:Z"
-        ).execute()
 
-    if requests:
-        svc.batchUpdate(
-            spreadsheetId=sheet_id,
-            body={"requests": requests}
-        ).execute()
+    return pd.DataFrame(rows)
 
-    # 2) Chuẩn bị values (header + rows)
-    values = [df.columns.tolist()] + df.values.tolist()
-    svc.values().update(
+
+def sheets_client(creds_json_path):
+    """Tạo Google Sheets service client từ service account JSON."""
+    scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+    creds = Credentials.from_service_account_file(creds_json_path, scopes=scopes)
+    return build("sheets", "v4", credentials=creds).spreadsheets()
+
+
+def write_to_sheet(spreadsheets, sheet_id, df, sheet_name="Sheet1"):
+    """
+    Append data vào Google Sheet.
+    Tạo header nếu trang còn trống.
+    """
+    values = df[
+        ["brand", "start_date", "end_date", "avg_interest", "geo", "gprop"]
+    ].values.tolist()
+
+    # Kiểm tra có header chưa
+    read = spreadsheets.values().get(
         spreadsheetId=sheet_id,
-        range=f"{tab_name}!A1",
+        range=f"{sheet_name}!A1:A1"
+    ).execute()
+
+    is_empty = ("values" not in read)
+
+    if is_empty:
+        header = [["brand", "start_date", "end_date", "avg_interest", "geo", "gprop"]]
+        spreadsheets.values().append(
+            spreadsheetId=sheet_id,
+            range=f"{sheet_name}!A1",
+            valueInputOption="RAW",
+            body={"values": header}
+        ).execute()
+
+    # Append dữ liệu
+    spreadsheets.values().append(
+        spreadsheetId=sheet_id,
+        range=f"{sheet_name}!A1",
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
 
 
 def main():
-    ym, start_d, end_d = prev_month_range()
+    assert_inputs()
 
-    # 1) Lấy dữ liệu trends
+    start_d, end_d = last_full_month_range()
+    print(f"[INFO] Timeframe: {start_d} -> {end_d} | GEO={GEO} | gprop={GPROP or 'web'}")
+
     df = trends_monthly_dataframe(BRANDS, GEO, GPROP, start_d, end_d)
-    if df.empty:
-        # tạo 1 dòng note để bạn dễ kiểm tra
-        df = pd.DataFrame([{"Date": "No data", "Note": "Trends empty in range"}])
+    print("[INFO] Data collected:")
+    print(df)
 
-    # 2) Ghi vào Google Sheets (tab theo yyyy-mm)
-    sheets = auth_sheets(CREDS_JSON)
-    write_to_sheet(sheets, SHEET_ID, ym, df)
+    # Ghi Google Sheets
+    sheets = sheets_client(CREDS_JSON_PATH)
+    write_to_sheet(sheets, SHEET_ID, df, sheet_name="Sheet1")
 
-    print(f"Done. Wrote {len(df)} rows to sheet '{ym}'.")
+    print("[DONE] Đã ghi dữ liệu vào Google Sheet.")
 
 
 if __name__ == "__main__":
