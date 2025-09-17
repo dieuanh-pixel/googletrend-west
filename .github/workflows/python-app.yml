@@ -1,29 +1,35 @@
 name: Google Trends Workflow
 
 on:
-  workflow_dispatch:
+  workflow_dispatch: {}
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
     env:
-      GOOGLE_APPLICATION_CREDENTIALS: ${{ secrets.GOOGLE_APPLICATION_CREDENTIALS }}
-      SHEET_ID: ${{ secrets.SHEET_ID }}   # <-- NHẤT ĐỊNH PHẢI CÓ DÒNG NÀY
+      SHEET_ID: ${{ secrets.SHEET_ID }}
+
     steps:
-      - name: Checkout code
+      - name: Checkout repo
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v4
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Run script
+      # Ghi nội dung secret JSON ra file creds.json
+      - name: Write GCP creds to file
         run: |
-          echo "${GOOGLE_APPLICATION_CREDENTIALS}" > creds.json
-          python main.py
+          cat > creds.json << 'EOF'
+          ${{ secrets.GCP_CREDS }}
+          EOF
+
+      # Chạy script
+      - name: Run main.py
+        run: python main.py
