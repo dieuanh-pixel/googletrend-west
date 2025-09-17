@@ -1,35 +1,38 @@
 name: Google Trends Workflow
 
 on:
-  workflow_dispatch: {}
+  workflow_dispatch: {}   # Cho phép Run thủ công
+  # Nếu muốn tự động hàng tháng (9h sáng ngày cuối tháng), bỏ comment cron:
 
 jobs:
   run-script:
     runs-on: ubuntu-latest
+
     env:
-      SHEET_ID: ${{ secrets.SHEET_ID }}
+      SHEET_ID: ${{ secrets.SHEET_ID }}        # BẮT BUỘC: dán ID sheet vào Secrets
+      GEO: "US"                                 # Có thể đổi "US" -> "KR", "ID",...
+      GPROP: ""                                 # "", "images", "news", "youtube", "froogle"
 
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      # Ghi nội dung secret JSON ra file creds.json
       - name: Write GCP creds to file
+        # Secret GOOGLE_APPLICATION_CREDENTIALS_JSON chứa JSON service account
         run: |
-          cat > creds.json << 'EOF'
-          ${{ secrets.GCP_CREDS }}
-          EOF
+          echo '${{ secrets.GOOGLE_APPLICATION_CREDENTIALS_JSON }}' > creds.json
+        shell: bash
 
-      # Chạy script
       - name: Run main.py
-        run: python main.py
+        run: |
+          python main.py
